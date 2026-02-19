@@ -5,360 +5,272 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-import os
+import re
 
 DB_PATH = Path.home() / ".saas_exit_tracker.db"
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def init_db():
-    conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS industries (
-            id INTEGER PRIMARY KEY,
-            name TEXT UNIQUE NOT NULL,
-            legacy_score INTEGER DEFAULT 0,
-            market_size TEXT,
-            tech_adoption TEXT,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        
-        CREATE TABLE IF NOT EXISTS contacts (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            company TEXT,
-            role TEXT,
-            industry_id INTEGER,
-            relationship_level INTEGER DEFAULT 1,
-            email TEXT,
-            phone TEXT,
-            last_contact DATE,
-            next_followup DATE,
-            notes TEXT,
-            is_design_partner BOOLEAN DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (industry_id) REFERENCES industries(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS interactions (
-            id INTEGER PRIMARY KEY,
-            contact_id INTEGER NOT NULL,
-            date DATE NOT NULL,
-            type TEXT,
-            summary TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (contact_id) REFERENCES contacts(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS opportunities (
-            id INTEGER PRIMARY KEY,
-            company TEXT NOT NULL,
-            industry_id INTEGER,
-            stage TEXT DEFAULT 'identified',
-            valuation_range TEXT,
-            fit_score INTEGER DEFAULT 0,
-            contact_id INTEGER,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (industry_id) REFERENCES industries(id),
-            FOREIGN KEY (contact_id) REFERENCES contacts(id)
-        );
-        
-        CREATE TABLE IF NOT EXISTS metrics (
-            id INTEGER PRIMARY KEY,
-            date DATE NOT NULL,
-            funding_amount INTEGER DEFAULT 0,
-            team_size INTEGER DEFAULT 0,
-            partnerships_count INTEGER DEFAULT 0,
-            mrr INTEGER DEFAULT 0,
-            design_partners INTEGER DEFAULT 0
-        );
-    """)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS industries
+                 (id INTEGER PRIMARY KEY, name TEXT UNIQUE, tech_distance INTEGER, 
+                  self_build_capability INTEGER, notes TEXT, created_at TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS partners
+                 (id INTEGER PRIMARY KEY, name TEXT, industry_id INTEGER, 
+                  contact_name TEXT, contact_email TEXT, company_size INTEGER,
+                  funding_stage TEXT, relationship_start TEXT, trust_score INTEGER DEFAULT 0,
+                  last_contact TEXT, notes TEXT, FOREIGN KEY(industry_id) REFERENCES industries(id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS interactions
+                 (id INTEGER PRIMARY KEY, partner_id INTEGER, interaction_date TEXT,
+                  interaction_type TEXT, ceo_involved INTEGER, notes TEXT, trust_delta INTEGER,
+                  FOREIGN KEY(partner_id) REFERENCES partners(id))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS opportunities
+                 (id INTEGER PRIMARY KEY, partner_id INTEGER, opportunity_type TEXT,
+                  description TEXT, identified_date TEXT, status TEXT,
+                  FOREIGN KEY(partner_id) REFERENCES partners(id))''')
     conn.commit()
     conn.close()
 
 @click.group()
 def cli():
-    """SaaS Exit Playbook Tracker - 18个月卖出策略执行工具"""
+    """SaaS退出策略追踪工具 - 18个月内实现低8位数退出"""
     init_db()
 
-@cli.group()
-def industry():
-    """行业筛选与评估"""
-    pass
-
-@industry.command()
-@click.argument('name')
-@click.option('--score', type=int, default=0, help='传统行业评分 (0-100)')
-@click.option('--market-size', default='', help='市场规模')
-@click.option('--tech-adoption', default='', help='技术采用程度')
+@cli.command()
+@click.option('--name', prompt='行业名称', help='目标行业')
+@click.option('--tech-distance', prompt='技术距离(1-10)', type=int, help='离技术圈距离，10=最远')
+@click.option('--self-build', prompt='自建能力(1-10)', type=int, help='客户自建能力，1=无能力')
 @click.option('--notes', default='', help='备注')
-def add(name, score, market_size, tech_adoption, notes):
+def add_industry(name, tech_distance, self_build, notes):
     """添加目标行业"""
-    conn = get_db()
+    if tech_distance < 7 or self_build > 3:
+        click.echo(f"⚠️  警告: 该行业可能不符合退出策略（需要tech_distance>=7且self_build<=3）")
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     try:
-        conn.execute(
-            "INSERT INTO industries (name, legacy_score, market_size, tech_adoption, notes) VALUES (?, ?, ?, ?, ?)",
-            (name, score, market_size, tech_adoption, notes)
-        )
+        c.execute("INSERT INTO industries VALUES (NULL,?,?,?,?,?)",
+                  (name, tech_distance, self_build, notes, datetime.now().isoformat()))
         conn.commit()
-        click.echo(f"✓ 已添加行业: {name} (评分: {score})")
+        click.echo(f"✓ 已添加行业: {name} (评分: {tech_distance}/10 技术距离, {self_build}/10 自建能力)")
     except sqlite3.IntegrityError:
-        click.echo(f"✗ 行业 {name} 已存在", err=True)
+        click.echo(f"✗ 行业已存在: {name}")
     finally:
         conn.close()
 
-@industry.command()
-def list():
-    """列出所有行业"""
-    conn = get_db()
-    rows = conn.execute("SELECT * FROM industries ORDER BY legacy_score DESC").fetchall()
+@cli.command()
+def list_industries():
+    """列出所有行业及评估"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    rows = c.execute("SELECT id, name, tech_distance, self_build_capability, notes FROM industries ORDER BY tech_distance DESC").fetchall()
     conn.close()
     
     if not rows:
         click.echo("暂无行业数据")
         return
     
+    click.echo("\n目标行业列表:")
     for row in rows:
-        click.echo(f"\n[{row['id']}] {row['name']} - 评分: {row['legacy_score']}")
-        if row['market_size']:
-            click.echo(f"  市场规模: {row['market_size']}")
-        if row['tech_adoption']:
-            click.echo(f"  技术采用: {row['tech_adoption']}")
-        if row['notes']:
-            click.echo(f"  备注: {row['notes']}")
+        score = row[2] + (10 - row[3])
+        status = "🎯 优质" if score >= 14 else "⚠️  一般"
+        click.echo(f"{status} [{row[0]}] {row[1]} | 技术距离:{row[2]} 自建能力:{row[3]} | {row[4]}")
 
-@cli.group()
-def contact():
-    """潜在收购方关系管理"""
-    pass
-
-@contact.command()
-@click.argument('name')
-@click.option('--company', required=True, help='公司名称')
-@click.option('--role', default='', help='职位')
-@click.option('--industry-id', type=int, help='关联行业ID')
-@click.option('--email', default='', help='邮箱')
-@click.option('--phone', default='', help='电话')
-@click.option('--design-partner', is_flag=True, help='标记为设计合作伙伴')
-def add(name, company, role, industry_id, email, phone, design_partner):
-    """添加联系人"""
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO contacts (name, company, role, industry_id, email, phone, is_design_partner) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (name, company, role, industry_id, email, phone, 1 if design_partner else 0)
-    )
+@cli.command()
+@click.option('--name', prompt='公司名称')
+@click.option('--industry-id', prompt='行业ID', type=int)
+@click.option('--contact-name', prompt='联系人姓名')
+@click.option('--contact-email', prompt='联系人邮箱')
+@click.option('--size', prompt='公司规模(人数)', type=int, default=50)
+@click.option('--funding', prompt='融资阶段', default='Seed')
+def add_partner(name, industry_id, contact_name, contact_email, size, funding):
+    """添加设计合作伙伴（潜在收购方）"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO partners VALUES (NULL,?,?,?,?,?,?,?,0,?,?)",
+              (name, industry_id, contact_name, contact_email, size, funding,
+               datetime.now().isoformat(), datetime.now().isoformat(), ''))
     conn.commit()
     conn.close()
-    click.echo(f"✓ 已添加联系人: {name} @ {company}")
+    click.echo(f"✓ 已添加合作伙伴: {name} ({contact_name})")
 
-@contact.command()
-@click.option('--design-partners', is_flag=True, help='仅显示设计合作伙伴')
-def list(design_partners):
-    """列出所有联系人"""
-    conn = get_db()
-    query = "SELECT c.*, i.name as industry_name FROM contacts c LEFT JOIN industries i ON c.industry_id = i.id"
-    if design_partners:
-        query += " WHERE c.is_design_partner = 1"
-    query += " ORDER BY c.relationship_level DESC, c.last_contact DESC"
+@cli.command()
+@click.option('--partner-id', prompt='合作伙伴ID', type=int)
+@click.option('--type', prompt='互动类型', type=click.Choice(['email', 'call', 'meeting', 'demo', 'contract']))
+@click.option('--ceo-involved', prompt='CEO参与?', type=bool, default=False)
+@click.option('--notes', default='')
+@click.option('--trust-delta', prompt='信任度变化(-5到+5)', type=int, default=1)
+def log_interaction(partner_id, type, ceo_involved, notes, trust_delta):
+    """记录互动（自动更新信任度）"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     
-    rows = conn.execute(query).fetchall()
+    c.execute("SELECT trust_score FROM partners WHERE id=?", (partner_id,))
+    result = c.fetchone()
+    if not result:
+        click.echo("✗ 合作伙伴不存在")
+        conn.close()
+        return
+    
+    new_trust = max(0, min(100, result[0] + trust_delta))
+    
+    c.execute("INSERT INTO interactions VALUES (NULL,?,?,?,?,?,?)",
+              (partner_id, datetime.now().isoformat(), type, int(ceo_involved), notes, trust_delta))
+    c.execute("UPDATE partners SET trust_score=?, last_contact=? WHERE id=?",
+              (new_trust, datetime.now().isoformat(), partner_id))
+    conn.commit()
+    conn.close()
+    
+    click.echo(f"✓ 已记录互动 | 信任度: {result[0]} → {new_trust}")
+    if new_trust >= 70:
+        click.echo("🎯 信任度达到70+，可考虑探索收购意向")
+
+@cli.command()
+@click.option('--min-trust', default=50, help='最低信任度')
+@click.option('--min-months', default=12, help='最短关系月数')
+def list_partners(min_trust, min_months):
+    """列出合作伙伴及退出准备度"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    cutoff_date = (datetime.now() - timedelta(days=min_months*30)).isoformat()
+    
+    rows = c.execute("""
+        SELECT p.id, p.name, p.contact_name, p.trust_score, p.relationship_start, 
+               p.last_contact, i.name, p.company_size, p.funding_stage,
+               (SELECT COUNT(*) FROM interactions WHERE partner_id=p.id AND ceo_involved=1) as ceo_count
+        FROM partners p
+        JOIN industries i ON p.industry_id = i.id
+        WHERE p.trust_score >= ? AND p.relationship_start <= ?
+        ORDER BY p.trust_score DESC
+    """, (min_trust, cutoff_date)).fetchall()
     conn.close()
     
     if not rows:
-        click.echo("暂无联系人")
+        click.echo(f"暂无符合条件的合作伙伴（信任度>={min_trust}，关系>={min_months}月）")
         return
     
+    click.echo(f"\n🎯 退出候选合作伙伴 (信任度>={min_trust}, 关系>={min_months}月):\n")
     for row in rows:
-        dp = " [设计合作伙伴]" if row['is_design_partner'] else ""
-        click.echo(f"\n[{row['id']}] {row['name']} @ {row['company']}{dp}")
-        if row['role']:
-            click.echo(f"  职位: {row['role']}")
-        if row['industry_name']:
-            click.echo(f"  行业: {row['industry_name']}")
-        click.echo(f"  关系等级: {row['relationship_level']}/5")
-        if row['last_contact']:
-            click.echo(f"  最后联系: {row['last_contact']}")
-        if row['next_followup']:
-            click.echo(f"  下次跟进: {row['next_followup']}")
+        months = (datetime.now() - datetime.fromisoformat(row[4])).days // 30
+        status = "🔥 高优先级" if row[3] >= 80 and months >= 18 else "✓ 可接触"
+        click.echo(f"{status} [{row[0]}] {row[1]} ({row[6]})")
+        click.echo(f"  联系人: {row[2]} | 信任度: {row[3]}/100 | 关系: {months}月")
+        click.echo(f"  CEO互动: {row[9]}次 | 规模: {row[7]}人 | 融资: {row[8]}")
+        click.echo(f"  最后联系: {row[5][:10]}\n")
 
-@contact.command()
-@click.argument('contact_id', type=int)
-@click.option('--type', default='email', help='沟通类型 (email/call/meeting)')
-@click.option('--summary', required=True, help='沟通摘要')
-@click.option('--next-days', type=int, default=30, help='下次跟进天数')
-def log(contact_id, type, summary, next_days):
-    """记录沟通"""
-    conn = get_db()
-    today = datetime.now().date()
-    next_date = today + timedelta(days=next_days)
-    
-    conn.execute(
-        "INSERT INTO interactions (contact_id, date, type, summary) VALUES (?, ?, ?, ?)",
-        (contact_id, today, type, summary)
-    )
-    conn.execute(
-        "UPDATE contacts SET last_contact = ?, next_followup = ? WHERE id = ?",
-        (today, next_date, contact_id)
-    )
+@cli.command()
+@click.option('--partner-id', prompt='合作伙伴ID', type=int)
+@click.option('--type', prompt='机会类型', type=click.Choice(['feature_request', 'budget_increase', 'team_expansion', 'competitor_mention']))
+@click.option('--description', prompt='描述')
+def add_opportunity(partner_id, type, description):
+    """识别相邻机会（收购信号）"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO opportunities VALUES (NULL,?,?,?,?,?)",
+              (partner_id, type, description, datetime.now().isoformat(), 'active'))
     conn.commit()
     conn.close()
-    click.echo(f"✓ 已记录沟通，下次跟进: {next_date}")
-
-@contact.command()
-def reminders():
-    """查看待跟进提醒"""
-    conn = get_db()
-    today = datetime.now().date()
-    rows = conn.execute(
-        "SELECT * FROM contacts WHERE next_followup <= ? ORDER BY next_followup",
-        (today,)
-    ).fetchall()
-    conn.close()
     
-    if not rows:
-        click.echo("✓ 暂无待跟进联系人")
-        return
+    signal_map = {
+        'feature_request': '功能需求增加 → 可能考虑收购以快速获得能力',
+        'budget_increase': '预算增加 → 财务状况改善，收购能力提升',
+        'team_expansion': '团队扩张 → 业务增长，可能需要技术整合',
+        'competitor_mention': '提及竞品 → 市场压力，可能寻求并购'
+    }
     
-    click.echo(f"需要跟进的联系人 ({len(rows)}):\n")
-    for row in rows:
-        click.echo(f"[{row['id']}] {row['name']} @ {row['company']}")
-        click.echo(f"  应跟进日期: {row['next_followup']}")
-        if row['notes']:
-            click.echo(f"  备注: {row['notes']}")
-        click.echo()
+    click.echo(f"✓ 已记录机会")
+    click.echo(f"💡 信号解读: {signal_map[type]}")
 
-@cli.group()
-def opportunity():
-    """收购机会识别与管理"""
-    pass
-
-@opportunity.command()
-@click.argument('company')
-@click.option('--industry-id', type=int, help='行业ID')
-@click.option('--stage', default='identified', help='阶段: identified/contacted/negotiating/due_diligence/closed')
-@click.option('--valuation', default='', help='估值范围')
-@click.option('--fit-score', type=int, default=0, help='匹配度评分 (0-100)')
-@click.option('--contact-id', type=int, help='关联联系人ID')
-@click.option('--notes', default='', help='备注')
-def add(company, industry_id, stage, valuation, fit_score, contact_id, notes):
-    """添加收购机会"""
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO opportunities (company, industry_id, stage, valuation_range, fit_score, contact_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (company, industry_id, stage, valuation, fit_score, contact_id, notes)
-    )
-    conn.commit()
-    conn.close()
-    click.echo(f"✓ 已添加收购机会: {company}")
-
-@opportunity.command()
-def pipeline():
-    """查看交易管道"""
-    conn = get_db()
-    rows = conn.execute("""
-        SELECT o.*, i.name as industry_name, c.name as contact_name
-        FROM opportunities o
-        LEFT JOIN industries i ON o.industry_id = i.id
-        LEFT JOIN contacts c ON o.contact_id = c.id
-        ORDER BY o.fit_score DESC, o.created_at DESC
+@cli.command()
+def exit_readiness():
+    """退出准备度报告"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    total_partners = c.execute("SELECT COUNT(*) FROM partners").fetchone()[0]
+    high_trust = c.execute("SELECT COUNT(*) FROM partners WHERE trust_score >= 70").fetchone()[0]
+    mature_relationships = c.execute("""
+        SELECT COUNT(*) FROM partners 
+        WHERE julianday('now') - julianday(relationship_start) >= 365
+    """).fetchone()[0]
+    
+    recent_opps = c.execute("""
+        SELECT COUNT(*) FROM opportunities 
+        WHERE julianday('now') - julianday(identified_date) <= 90 AND status='active'
+    """).fetchone()[0]
+    
+    top_candidates = c.execute("""
+        SELECT p.name, p.trust_score, 
+               CAST((julianday('now') - julianday(p.relationship_start)) / 30 AS INTEGER) as months
+        FROM partners p
+        WHERE p.trust_score >= 70 
+        AND julianday('now') - julianday(p.relationship_start) >= 365
+        ORDER BY p.trust_score DESC LIMIT 3
     """).fetchall()
+    
+    conn.close()
+    
+    click.echo("\n📊 退出准备度报告\n")
+    click.echo(f"合作伙伴总数: {total_partners}")
+    click.echo(f"高信任度(70+): {high_trust} ({high_trust/max(total_partners,1)*100:.0f}%)")
+    click.echo(f"成熟关系(12月+): {mature_relationships}")
+    click.echo(f"近期机会(90天): {recent_opps}")
+    
+    readiness_score = (high_trust * 30 + mature_relationships * 40 + min(recent_opps, 5) * 6)
+    
+    click.echo(f"\n🎯 退出准备度: {readiness_score}/100")
+    
+    if readiness_score >= 80:
+        click.echo("✓ 已具备退出条件，建议主动接触收购意向")
+    elif readiness_score >= 50:
+        click.echo("⚠️  接近退出窗口，继续深化关键合作伙伴关系")
+    else:
+        click.echo("📈 早期阶段，专注建立信任和识别机会")
+    
+    if top_candidates:
+        click.echo("\n🔥 Top 3 退出候选:")
+        for name, trust, months in top_candidates:
+            click.echo(f"  • {name} | 信任度:{trust} | 关系:{months}月")
+
+@cli.command()
+@click.option('--partner-id', type=int, help='合作伙伴ID（留空显示全部）')
+def timeline(partner_id):
+    """查看互动时间线"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    if partner_id:
+        rows = c.execute("""
+            SELECT i.interaction_date, i.interaction_type, i.ceo_involved, 
+                   i.notes, i.trust_delta, p.name
+            FROM interactions i
+            JOIN partners p ON i.partner_id = p.id
+            WHERE i.partner_id = ?
+            ORDER BY i.interaction_date DESC LIMIT 20
+        """, (partner_id,)).fetchall()
+    else:
+        rows = c.execute("""
+            SELECT i.interaction_date, i.interaction_type, i.ceo_involved, 
+                   i.notes, i.trust_delta, p.name
+            FROM interactions i
+            JOIN partners p ON i.partner_id = p.id
+            ORDER BY i.interaction_date DESC LIMIT 50
+        """).fetchall()
+    
     conn.close()
     
     if not rows:
-        click.echo("暂无收购机会")
+        click.echo("暂无互动记录")
         return
     
-    stages = {}
+    click.echo("\n📅 互动时间线:\n")
     for row in rows:
-        stage = row['stage']
-        if stage not in stages:
-            stages[stage] = []
-        stages[stage].append(row)
-    
-    for stage, opps in stages.items():
-        click.echo(f"\n=== {stage.upper()} ({len(opps)}) ===")
-        for opp in opps:
-            click.echo(f"\n[{opp['id']}] {opp['company']} - 匹配度: {opp['fit_score']}")
-            if opp['industry_name']:
-                click.echo(f"  行业: {opp['industry_name']}")
-            if opp['valuation_range']:
-                click.echo(f"  估值: {opp['valuation_range']}")
-            if opp['contact_name']:
-                click.echo(f"  联系人: {opp['contact_name']}")
-            if opp['notes']:
-                click.echo(f"  备注: {opp['notes']}")
-
-@opportunity.command()
-@click.argument('opp_id', type=int)
-@click.argument('stage')
-def update_stage(opp_id, stage):
-    """更新交易阶段"""
-    conn = get_db()
-    conn.execute("UPDATE opportunities SET stage = ? WHERE id = ?", (stage, opp_id))
-    conn.commit()
-    conn.close()
-    click.echo(f"✓ 已更新阶段为: {stage}")
-
-@cli.group()
-def metrics():
-    """关键指标管理"""
-    pass
-
-@metrics.command()
-@click.option('--funding', type=int, default=0, help='融资金额')
-@click.option('--team-size', type=int, default=0, help='团队规模')
-@click.option('--partnerships', type=int, default=0, help='合作伙伴数量')
-@click.option('--mrr', type=int, default=0, help='月度经常性收入')
-@click.option('--design-partners', type=int, default=0, help='设计合作伙伴数量')
-def update(funding, team_size, partnerships, mrr, design_partners):
-    """更新当前指标"""
-    conn = get_db()
-    today = datetime.now().date()
-    conn.execute(
-        "INSERT INTO metrics (date, funding_amount, team_size, partnerships_count, mrr, design_partners) VALUES (?, ?, ?, ?, ?, ?)",
-        (today, funding, team_size, partnerships, mrr, design_partners)
-    )
-    conn.commit()
-    conn.close()
-    click.echo("✓ 已更新指标")
-
-@metrics.command()
-def dashboard():
-    """显示仪表板"""
-    conn = get_db()
-    
-    latest = conn.execute("SELECT * FROM metrics ORDER BY date DESC LIMIT 1").fetchone()
-    industry_count = conn.execute("SELECT COUNT(*) as cnt FROM industries").fetchone()['cnt']
-    contact_count = conn.execute("SELECT COUNT(*) as cnt FROM contacts").fetchone()['cnt']
-    dp_count = conn.execute("SELECT COUNT(*) as cnt FROM contacts WHERE is_design_partner = 1").fetchone()['cnt']
-    opp_count = conn.execute("SELECT COUNT(*) as cnt FROM opportunities").fetchone()['cnt']
-    active_deals = conn.execute("SELECT COUNT(*) as cnt FROM opportunities WHERE stage IN ('contacted', 'negotiating', 'due_diligence')").fetchone()['cnt']
-    
-    conn.close()
-    
-    click.echo("\n=== SaaS Exit Playbook 仪表板 ===\n")
-    
-    click.echo("【合法性指标】")
-    if latest:
-        click.echo(f"  融资金额: ${latest['funding_amount']:,}")
-        click.echo(f"  团队规模: {latest['team_size']} 人")
-        click.echo(f"  合作伙伴: {latest['partnerships_count']}")
-        click.echo(f"  MRR: ${latest['mrr']:,}")
-        click.echo(f"  设计合作伙伴: {latest['design_partners']}")
-    else:
-        click.echo("  (暂无数据，使用 'metrics update' 更新)")
-    
-    click.echo("\n【执行进度】")
-    click.echo(f"  目标行业: {industry_count}")
-    click.echo(f"  关系网络: {contact_count} 联系人 ({dp_count} 设计合作伙伴)")
-    click.echo(f"  收购机会: {opp_count} ({active_deals} 活跃交易)")
-    
-    click.echo()
+        ceo_badge = "👔" if row[2] else "  "
+        delta_str = f"(+{row[4]})" if row[4] > 0 else f"({row[4]})" if row[4] < 0 else ""
+        click.echo(f"{ceo_badge} {row[0][:10]} | {row[5]} | {row[1]} {delta_str}")
+        if row[3]:
+            click.echo(f"     {row[3]}")
 
 if __name__ == '__main__':
     cli()
