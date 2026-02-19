@@ -1,3 +1,5 @@
+ai
 click>=8.0.0
-pandas
-schedule
+crmforrelationshipmanagement
+industry-specificsaasplatform
+minimalviableproduct

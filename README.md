@@ -1,4 +1,4 @@
-# saas_exit_playbook_tracker
+# legacy_saas_exit_playbook
 
 [English](#english) | [中文](#chinese)
 
@@ -7,15 +7,16 @@
 ## <a id="english"></a>English
 
 ### Overview
-追踪和管理针对传统行业的SaaS快速退出策略执行进度
+A strategic playbook for selling SaaS startups to legacy industry players within 18 months, focusing on relationship-building over product perfection
 
 ### Features
-- 目标行业筛选与评估（远离技术圈、客户无自建能力）
-- 设计合作伙伴管理（潜在收购方追踪）
-- 关系深度评分系统（CEO沟通频率、信任度指标）
-- 相邻机会识别引擎（监控合作方需求变化）
-- 融资与团队规模追踪（用于建立可信度，非增长指标）
-- 退出时机提醒（12+月关系积累后的信号检测）
+- Target legacy industries where customers cannot build tech themselves
+- Raise seed funding ($1M) for credibility, not product development
+- Establish design partnerships with potential acquirers
+- Build deep C-level relationships over 12+ months
+- Position as trusted technology advisor in the vertical
+- Identify adjacent acquisition opportunities within partner organizations
+- Execute acqui-hire or quick sale (not feature sale)
 
 ### Installation
 ```bash
@@ -24,22 +25,23 @@ python src/main.py --help
 ```
 
 ### Tech Stack
-Python, SQLite/PostgreSQL, pandas, schedule
+Minimal viable product (MVP), Industry-specific SaaS platform, AI/ML capabilities (optional, for positioning), CRM for relationship management
 
 ---
 
 ## <a id="chinese"></a>中文
 
 ### 概述
-追踪和管理针对传统行业的SaaS快速退出策略执行进度
+一套针对传统行业的SaaS创业公司退出策略手册，通过关系建立而非产品完善，在18个月内实现千万美元级别收购
 
 ### 功能特性
-- 目标行业筛选与评估（远离技术圈、客户无自建能力）
-- 设计合作伙伴管理（潜在收购方追踪）
-- 关系深度评分系统（CEO沟通频率、信任度指标）
-- 相邻机会识别引擎（监控合作方需求变化）
-- 融资与团队规模追踪（用于建立可信度，非增长指标）
-- 退出时机提醒（12+月关系积累后的信号检测）
+- 选择客户无技术能力的传统行业（如福利经纪、石油天然气、医疗SaaS、物流、建筑科技）
+- 融资100万美元建立可信度（非产品开发）
+- 与潜在收购方建立设计合作伙伴关系
+- 12个月以上深度维护CEO级别关系
+- 定位为垂直领域的可信技术顾问
+- 在合作伙伴组织内识别相邻收购机会
+- 执行整体收购（非功能销售）
 
 ### 安装使用
 ```bash
@@ -48,4 +50,4 @@ python src/main.py --help
 ```
 
 ### 技术栈
-Python, SQLite/PostgreSQL, pandas, schedule
+Minimal viable product (MVP), Industry-specific SaaS platform, AI/ML capabilities (optional, for positioning), CRM for relationship management
